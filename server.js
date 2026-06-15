@@ -11,19 +11,18 @@ const DATA_FILE = path.join(DATA_DIR, 'todos.json');
 
 const clients = new Set();
 
-function ensureDataStore() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.writeFileSync(DATA_FILE, JSON.stringify([]), 'utf8');
+async function ensureDataStore() {
+  await fs.promises.mkdir(DATA_DIR, { recursive: true });
+  try {
+    await fs.promises.access(DATA_FILE);
+  } catch {
+    await fs.promises.writeFile(DATA_FILE, JSON.stringify([]), 'utf8');
   }
 }
 
-function readTodos() {
-  ensureDataStore();
-  const raw = fs.readFileSync(DATA_FILE, 'utf8');
+async function readTodos() {
+  await ensureDataStore();
+  const raw = await fs.promises.readFile(DATA_FILE, 'utf8');
   try {
     const data = JSON.parse(raw);
     return Array.isArray(data) ? data : [];
@@ -32,9 +31,9 @@ function readTodos() {
   }
 }
 
-function writeTodos(todos) {
-  ensureDataStore();
-  fs.writeFileSync(DATA_FILE, JSON.stringify(todos, null, 2), 'utf8');
+async function writeTodos(todos) {
+  await ensureDataStore();
+  await fs.promises.writeFile(DATA_FILE, JSON.stringify(todos, null, 2), 'utf8');
 }
 
 function sendJson(res, statusCode, payload) {
@@ -59,6 +58,12 @@ function broadcastTodos() {
 
 function parseBody(req) {
   return new Promise((resolve, reject) => {
+    const contentLength = Number(req.headers['content-length'] || 0);
+    if (contentLength > 1_000_000) {
+      reject(new Error('Body too large'));
+      return;
+    }
+
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
@@ -82,10 +87,10 @@ function parseBody(req) {
   });
 }
 
-function serveStatic(req, res) {
-  const requestPath = req.url === '/' ? '/index.html' : req.url;
-  const safePath = path.normalize(decodeURIComponent(requestPath)).replace(/^(\.\.[/\\])+/, '');
-  const filePath = path.join(PUBLIC_DIR, safePath);
+async function serveStatic(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const requestPath = url.pathname === '/' ? '/index.html' : url.pathname;
+  const filePath = path.resolve(PUBLIC_DIR, `.${decodeURIComponent(requestPath)}`);
 
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -93,25 +98,26 @@ function serveStatic(req, res) {
     return;
   }
 
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404);
-      res.end('Not found');
-      return;
-    }
+  let data;
+  try {
+    data = await fs.promises.readFile(filePath);
+  } catch {
+    res.writeHead(404);
+    res.end('Not found');
+    return;
+  }
 
-    const ext = path.extname(filePath).toLowerCase();
-    const contentTypes = {
-      '.html': 'text/html; charset=utf-8',
-      '.css': 'text/css; charset=utf-8',
-      '.js': 'application/javascript; charset=utf-8'
-    };
-    res.writeHead(200, {
-      'Content-Type': contentTypes[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-store'
-    });
-    res.end(data);
+  const ext = path.extname(filePath).toLowerCase();
+  const contentTypes = {
+    '.html': 'text/html; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8'
+  };
+  res.writeHead(200, {
+    'Content-Type': contentTypes[ext] || 'application/octet-stream',
+    'Cache-Control': 'no-store'
   });
+  res.end(data);
 }
 
 async function handleApi(req, res) {
@@ -119,7 +125,7 @@ async function handleApi(req, res) {
   const pathname = url.pathname;
 
   if (req.method === 'GET' && pathname === '/api/todos') {
-    sendJson(res, 200, readTodos());
+    sendJson(res, 200, await readTodos());
     return true;
   }
 
@@ -146,7 +152,7 @@ async function handleApi(req, res) {
       return true;
     }
 
-    const todos = readTodos();
+    const todos = await readTodos();
     const todo = {
       id: randomUUID(),
       text,
@@ -154,7 +160,7 @@ async function handleApi(req, res) {
       createdAt: Date.now()
     };
     todos.unshift(todo);
-    writeTodos(todos);
+    await writeTodos(todos);
     broadcastTodos();
     sendJson(res, 201, todo);
     return true;
@@ -163,7 +169,7 @@ async function handleApi(req, res) {
   if (req.method === 'PATCH' && pathname.startsWith('/api/todos/')) {
     const todoId = pathname.replace('/api/todos/', '');
     const body = await parseBody(req);
-    const todos = readTodos();
+    const todos = await readTodos();
     const todo = todos.find((item) => item.id === todoId);
     if (!todo) {
       sendJson(res, 404, { error: 'Tarea no encontrada.' });
@@ -183,7 +189,7 @@ async function handleApi(req, res) {
       todo.completed = body.completed;
     }
 
-    writeTodos(todos);
+    await writeTodos(todos);
     broadcastTodos();
     sendJson(res, 200, todo);
     return true;
@@ -191,16 +197,17 @@ async function handleApi(req, res) {
 
   if (req.method === 'DELETE' && pathname.startsWith('/api/todos/')) {
     const todoId = pathname.replace('/api/todos/', '');
-    const todos = readTodos();
+    const todos = await readTodos();
     const nextTodos = todos.filter((item) => item.id !== todoId);
     if (nextTodos.length === todos.length) {
       sendJson(res, 404, { error: 'Tarea no encontrada.' });
       return true;
     }
 
-    writeTodos(nextTodos);
+    await writeTodos(nextTodos);
     broadcastTodos();
-    sendJson(res, 204, {});
+    res.writeHead(204);
+    res.end();
     return true;
   }
 
@@ -217,13 +224,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    serveStatic(req, res);
+    await serveStatic(req, res);
   } catch (error) {
     sendJson(res, 400, { error: error.message || 'Solicitud inválida.' });
   }
 });
 
 server.listen(PORT, () => {
-  ensureDataStore();
+  ensureDataStore().catch(() => {});
   console.log(`Servidor activo en http://localhost:${PORT}`);
 });

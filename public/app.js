@@ -108,6 +108,10 @@ stream.addEventListener('error', () => {
   setStatus('Reconectando al servidor...');
 });
 
+window.addEventListener('beforeunload', () => {
+  stream.close();
+});
+
 loadTodos().catch((error) => {
   setStatus(error.message);
 });
