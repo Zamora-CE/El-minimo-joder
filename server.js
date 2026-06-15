@@ -248,7 +248,7 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     console.error('Request error:', error);
     if (error instanceof HttpError) {
-      sendJson(res, error.statusCode, { error: 'Solicitud inválida.' });
+      sendJson(res, error.statusCode, { error: error.message });
       return;
     }
     sendJson(res, 500, { error: 'Error interno del servidor.' });
