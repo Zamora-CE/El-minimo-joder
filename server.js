@@ -120,6 +120,11 @@ async function serveStatic(req, res) {
   res.end(data);
 }
 
+function getTodoId(pathname) {
+  const todoId = pathname.split('/').pop();
+  return typeof todoId === 'string' ? decodeURIComponent(todoId) : '';
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const pathname = url.pathname;
@@ -167,7 +172,11 @@ async function handleApi(req, res) {
   }
 
   if (req.method === 'PATCH' && pathname.startsWith('/api/todos/')) {
-    const todoId = pathname.replace('/api/todos/', '');
+    const todoId = getTodoId(pathname);
+    if (!todoId) {
+      sendJson(res, 400, { error: 'ID de tarea inválido.' });
+      return true;
+    }
     const body = await parseBody(req);
     const todos = await readTodos();
     const todo = todos.find((item) => item.id === todoId);
@@ -196,7 +205,11 @@ async function handleApi(req, res) {
   }
 
   if (req.method === 'DELETE' && pathname.startsWith('/api/todos/')) {
-    const todoId = pathname.replace('/api/todos/', '');
+    const todoId = getTodoId(pathname);
+    if (!todoId) {
+      sendJson(res, 400, { error: 'ID de tarea inválido.' });
+      return true;
+    }
     const todos = await readTodos();
     const nextTodos = todos.filter((item) => item.id !== todoId);
     if (nextTodos.length === todos.length) {
@@ -226,11 +239,14 @@ const server = http.createServer(async (req, res) => {
 
     await serveStatic(req, res);
   } catch (error) {
-    sendJson(res, 400, { error: error.message || 'Solicitud inválida.' });
+    console.error('Request error:', error);
+    sendJson(res, 400, { error: 'Solicitud inválida.' });
   }
 });
 
 server.listen(PORT, () => {
-  ensureDataStore().catch(() => {});
+  ensureDataStore().catch((error) => {
+    console.error('Error al inicializar almacenamiento:', error);
+  });
   console.log(`Servidor activo en http://localhost:${PORT}`);
 });
