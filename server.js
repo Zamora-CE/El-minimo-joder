@@ -11,6 +11,13 @@ const DATA_FILE = path.join(DATA_DIR, 'todos.json');
 
 const clients = new Set();
 
+class HttpError extends Error {
+  constructor(statusCode, message) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
 async function ensureDataStore() {
   await fs.promises.mkdir(DATA_DIR, { recursive: true });
   try {
@@ -60,7 +67,7 @@ function parseBody(req) {
   return new Promise((resolve, reject) => {
     const contentLength = Number(req.headers['content-length'] || 0);
     if (contentLength > 1_000_000) {
-      reject(new Error('Body too large'));
+      reject(new HttpError(413, 'Body too large'));
       return;
     }
 
@@ -69,7 +76,7 @@ function parseBody(req) {
       body += chunk;
       if (body.length > 1_000_000) {
         req.destroy();
-        reject(new Error('Body too large'));
+        reject(new HttpError(413, 'Body too large'));
       }
     });
     req.on('end', () => {
@@ -80,7 +87,7 @@ function parseBody(req) {
       try {
         resolve(JSON.parse(body));
       } catch {
-        reject(new Error('Invalid JSON'));
+        reject(new HttpError(400, 'Invalid JSON'));
       }
     });
     req.on('error', reject);
@@ -90,7 +97,7 @@ function parseBody(req) {
 async function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requestPath = url.pathname === '/' ? '/index.html' : url.pathname;
-  const filePath = path.resolve(PUBLIC_DIR, `.${decodeURIComponent(requestPath)}`);
+  const filePath = path.resolve(PUBLIC_DIR, `.${requestPath}`);
 
   if (!filePath.startsWith(PUBLIC_DIR)) {
     res.writeHead(403);
@@ -240,7 +247,11 @@ const server = http.createServer(async (req, res) => {
     await serveStatic(req, res);
   } catch (error) {
     console.error('Request error:', error);
-    sendJson(res, 400, { error: 'Solicitud inválida.' });
+    if (error instanceof HttpError) {
+      sendJson(res, error.statusCode, { error: 'Solicitud inválida.' });
+      return;
+    }
+    sendJson(res, 500, { error: 'Error interno del servidor.' });
   }
 });
 
